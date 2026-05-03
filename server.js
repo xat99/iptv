@@ -3,32 +3,22 @@ const app = express();
 
 const port = process.env.PORT || 3000;
 
-// Eredeti szolgáltató adatai
 const IPTV_URL = process.env.IPTV_URL; 
 const IPTV_USER = process.env.IPTV_USER;
 const IPTV_PASS = process.env.IPTV_PASS;
 
-// Saját, védett adatok
 const MY_USER = process.env.MY_USER;
 const MY_PASS = process.env.MY_PASS;
 
-// Biztonsági ellenőrző funkció
 function checkCredentials(user, pass) {
     if (!MY_USER || !MY_PASS) return false;
     return user === MY_USER && pass === MY_PASS;
 }
 
-// ==========================================
-// UPTIMEROBOT PING VÉGPONT (Ez a főoldal)
-// ==========================================
 app.get('/', (req, res) => {
-    // Ez csak egy egyszerű válasz, hogy az UptimeRobot lássa: a szerver fut!
     res.status(200).send('IPTV Proxy aktív és ébren van! 🚀');
 });
 
-// ==========================================
-// 1. XTREAM CODES API ÉS MŰSORÚJSÁG (EPG) TOVÁBBÍTÁSA
-// ==========================================
 app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
     const { username, password } = req.query;
 
@@ -47,6 +37,11 @@ app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
         const response = await fetch(targetUrl);
         const data = await response.text();
 
+        // ÚJ: Megparancsoljuk az IPTV appnak, hogy NE használjon régi adatokat!
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        
         res.setHeader('Content-Type', response.headers.get('content-type') || 'application/json');
         res.send(data);
     } catch (error) {
@@ -55,9 +50,6 @@ app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
     }
 });
 
-// ==========================================
-// 2. VIDEÓ STREAMEK ÁTIRÁNYÍTÁSA
-// ==========================================
 app.get('/:type/:user/:pass/:filename', (req, res) => {
     const { type, user, pass, filename } = req.params;
 
@@ -74,7 +66,6 @@ app.get('/:type/:user/:pass/:filename', (req, res) => {
     res.redirect(302, redirectUrl);
 });
 
-// Szerver indítása
 app.listen(port, () => {
     console.log(`IPTV Xtream Proxy elindult a ${port}-es porton.`);
 });
