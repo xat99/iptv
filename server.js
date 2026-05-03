@@ -35,9 +35,30 @@ app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
         const targetUrl = `${IPTV_URL}${endpoint}?${urlParams.toString()}`;
 
         const response = await fetch(targetUrl);
-        const data = await response.text();
+        let data = await response.text();
 
-        // ÚJ: Megparancsoljuk az IPTV appnak, hogy NE használjon régi adatokat!
+        // ==========================================
+        // ÚJ TRÜKK: Az applikáció átverése
+        // ==========================================
+        try {
+            // Megpróbáljuk elolvasni a szolgáltató válaszát
+            let jsonData = JSON.parse(data);
+            
+            // Ha küldött "server_info"-t, azonnal átírjuk a te Renderes címedre!
+            if (jsonData && jsonData.server_info) {
+                const host = req.get('host'); // pl. te-szervered.onrender.com
+                jsonData.server_info.url = host;
+                jsonData.server_info.port = '443';
+                jsonData.server_info.https_port = '443';
+                jsonData.server_info.server_protocol = 'https';
+                
+                // Visszacsomagoljuk az átírt adatokat
+                data = JSON.stringify(jsonData);
+            }
+        } catch (e) {
+            // Ha nem JSON (pl. Műsorújság), akkor hagyjuk ahogy van
+        }
+
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
@@ -61,6 +82,11 @@ app.get('/:type/:user/:pass/:filename', (req, res) => {
     if (!checkCredentials(user, pass)) {
         return res.status(401).send('Hozzáférés megtagadva a videóhoz!');
     }
+
+    // ÚJ: Itt is tiltjuk a memóriát, hogy a tévé a csatornákat se jegyezze meg rosszul!
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     const redirectUrl = `${IPTV_URL}/${type}/${IPTV_USER}/${IPTV_PASS}/${filename}`;
     res.redirect(302, redirectUrl);
