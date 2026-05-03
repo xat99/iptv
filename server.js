@@ -1,10 +1,8 @@
 const express = require('express');
-const axios = require('axios'); // Jobb kezelés, mint a sima fetch
 const app = express();
 
 const port = process.env.PORT || 3000;
 
-// Környezeti változók (Ügyelj rá, hogy a Render-en be legyenek állítva!)
 const IPTV_URL = process.env.IPTV_URL; 
 const IPTV_USER = process.env.IPTV_USER;
 const IPTV_PASS = process.env.IPTV_PASS;
@@ -12,22 +10,20 @@ const IPTV_PASS = process.env.IPTV_PASS;
 const MY_USER = process.env.MY_USER;
 const MY_PASS = process.env.MY_PASS;
 
-// Segédfüggvény a hitelesítéshez
 function checkCredentials(user, pass) {
     if (!MY_USER || !MY_PASS) return false;
     return user === MY_USER && pass === MY_PASS;
 }
 
 app.get('/', (req, res) => {
-    res.status(200).send('IPTV Proxy: Online és Stabil 🚀');
+    res.status(200).send('IPTV Proxy Aktív 🚀');
 });
 
-// API Kérések kezelése (Csatornalista, EPG, Login)
 app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
-    const { username, password, action } = req.query;
+    const { username, password } = req.query;
 
     if (!checkCredentials(username, password)) {
-        return res.status(401).json({ error: "Hibás hitelesítés!" });
+        return res.status(401).json({ error: "Hibás adatok!" });
     }
 
     try {
@@ -38,59 +34,49 @@ app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
         const endpoint = req.path;
         const targetUrl = `${IPTV_URL}${endpoint}?${urlParams.toString()}`;
 
-        const response = await axios.get(targetUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-            timeout: 10000
+        const response = await fetch(targetUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
         });
 
-        let data = response.data;
-
-        // SERVER INFO ÁTÍRÁSA (Hogy az app a te proxy-dat hívja vissza)
-        if (typeof data === 'object' && data.server_info) {
-            const host = req.get('host');
-            const protocol = req.protocol; // http vagy https
-
-            data.server_info.url = host;
-            data.server_info.port = protocol === 'https' ? '443' : '80';
-            data.server_info.https_port = '443';
-            data.server_info.server_protocol = protocol;
+        const contentType = response.headers.get('content-type');
+        
+        if (contentType && contentType.includes('application/json')) {
+            let jsonData = await response.json();
             
-            // Néhány szolgáltató küld timestamp-et, ezt is érdemes frissíteni
-            data.server_info.timestamp = Math.floor(Date.now() / 1000);
+            // SERVER INFO ÁTÍRÁSA a Smarters Pro miatt
+            if (jsonData && jsonData.server_info) {
+                const host = req.get('host');
+                jsonData.server_info.url = host;
+                jsonData.server_info.port = "443";
+                jsonData.server_info.https_port = "443";
+                jsonData.server_info.server_protocol = "https";
+            }
+            res.setHeader('Content-Type', 'application/json');
+            return res.send(JSON.stringify(jsonData));
+        } else {
+            // Ha nem JSON (pl. XML műsorújság), akkor csak továbbadjuk a szöveget
+            const textData = await response.text();
+            res.setHeader('Content-Type', contentType || 'text/plain');
+            return res.send(textData);
         }
 
-        // Cache tiltása, hogy ne ragadjon be régi adat
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-        res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        res.send(data);
-
     } catch (error) {
-        console.error('API hiba:', error.message);
-        res.status(500).send('Szerver hiba a lekéréskor.');
+        console.error('API hiba:', error);
+        res.status(500).send('Szerver hiba');
     }
 });
 
-// STREAM ÁTIRÁNYÍTÁS (Élő adás, Filmek, Sorozatok)
 app.get('/:type/:user/:pass/:filename', (req, res) => {
     const { type, user, pass, filename } = req.params;
 
     if (!checkCredentials(user, pass)) {
-        return res.status(403).send('Hozzáférés megtagadva!');
+        return res.status(403).send('Tiltott!');
     }
 
-    const allowedTypes = ['live', 'movie', 'series'];
-    if (!allowedTypes.includes(type)) {
-        return res.status(404).send('Érvénytelen típus');
-    }
-
-    // Fontos: Itt a tényleges IPTV szolgáltatód URL-jét állítjuk össze
-    const finalStreamUrl = `${IPTV_URL}/${type}/${IPTV_USER}/${IPTV_PASS}/${filename}`;
-
-    // 302-es átirányítás helyett néhány eszköz a 301-et vagy a direkt proxy-t szereti, 
-    // de a 302 a legelterjedtebb. Ha nem megy, ezt kell cserélni.
-    res.redirect(302, finalStreamUrl);
+    const redirectUrl = `${IPTV_URL}/${type}/${IPTV_USER}/${IPTV_PASS}/${filename}`;
+    res.redirect(302, redirectUrl);
 });
 
 app.listen(port, () => {
-    console.log(`Szerver fut: http://localhost:${port}`);
+    console.log(`Szerver fut a ${port} porton.`);
 });
