@@ -3,7 +3,7 @@ const app = express();
 
 const port = process.env.PORT || 3000;
 
-// URL megtisztítása (levágja a perjelet a végéről, ha van)
+// URL tisztítás
 let IPTV_URL = process.env.IPTV_URL ? process.env.IPTV_URL.replace(/\/+$/, "") : ""; 
 const IPTV_USER = process.env.IPTV_USER;
 const IPTV_PASS = process.env.IPTV_PASS;
@@ -25,9 +25,10 @@ app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
 
     console.log(`Bejelentkezési kísérlet: ${username}`);
 
+    // HITELÉSÍTÉS ELLENŐRZÉSE
     if (!checkCredentials(username, password)) {
-        console.log("Hiba: Hibás felhasználónév vagy jelszó a kliensnél.");
-        return res.status(401).json({ error: "Hibás adatok!" });
+        console.log(`Hiba: '${username}' névvel próbáltak belépni, de a Proxy-hoz '${MY_USER}' kell.`);
+        return res.status(401).json({ error: "Hibás proxy hitelesítés!" });
     }
 
     try {
@@ -36,30 +37,33 @@ app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
         urlParams.set('password', IPTV_PASS);
         
         const targetUrl = `${IPTV_URL}${req.path}?${urlParams.toString()}`;
-        console.log(`Lekérés a szolgáltatótól: ${targetUrl}`);
-
+        
         const response = await fetch(targetUrl, {
             headers: { 'User-Agent': 'Mozilla/5.0' }
         });
-
-        if (!response.ok) {
-            console.log(`Szolgáltató hibát adott: ${response.status}`);
-            return res.status(response.status).send("A szolgáltató nem érhető el.");
-        }
 
         const contentType = response.headers.get('content-type');
         
         if (contentType && contentType.includes('application/json')) {
             let data = await response.json();
             
+            // SERVER INFO ÁTÍRÁSA
             if (data && data.server_info) {
                 const host = req.get('host');
                 data.server_info.url = host;
                 data.server_info.port = "443";
                 data.server_info.https_port = "443";
                 data.server_info.server_protocol = "https";
-                console.log("Server_info sikeresen átírva.");
             }
+
+            // USER INFO ÁTÍRÁSA (Ez volt a hiba!)
+            // Kicseréljük az igazi adatokat a te proxy adataidra
+            if (data && data.user_info) {
+                data.user_info.username = MY_USER;
+                data.user_info.password = MY_PASS;
+            }
+
+            console.log(`Sikeres válasz küldése a kliensnek (${username})`);
             res.setHeader('Content-Type', 'application/json; charset=utf-8');
             return res.send(JSON.stringify(data));
         } else {
@@ -69,8 +73,8 @@ app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
         }
 
     } catch (error) {
-        console.error('Súlyos hiba az API kérésnél:', error.message);
-        res.status(500).send('Belső szerverhiba.');
+        console.error('Szerver hiba:', error.message);
+        res.status(500).send('Belső hiba.');
     }
 });
 
@@ -78,16 +82,13 @@ app.get('/:type/:user/:pass/:filename', (req, res) => {
     const { type, user, pass, filename } = req.params;
 
     if (!checkCredentials(user, pass)) {
-        return res.status(403).send('Hozzáférés megtagadva!');
+        return res.status(403).send('Tiltott stream elérés!');
     }
 
     const finalStreamUrl = `${IPTV_URL}/${type}/${IPTV_USER}/${IPTV_PASS}/${filename}`;
-    console.log(`Stream átirányítás: ${finalStreamUrl}`);
-    
     res.redirect(302, finalStreamUrl);
 });
 
 app.listen(port, () => {
-    console.log(`Szerver elindult! Port: ${port}`);
-    console.log(`Cél URL: ${IPTV_URL}`);
+    console.log(`Szerver fut! Port: ${port}`);
 });
