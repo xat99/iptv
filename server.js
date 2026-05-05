@@ -1,4 +1,5 @@
 const express = require('express');
+const { Readable } = require('stream'); // ÚJ: Stream modul importálása a nagy fájlokhoz
 const app = express();
 
 const port = process.env.PORT || 3000;
@@ -20,14 +21,15 @@ app.get('/', (req, res) => {
     res.status(200).send('Proxy üzemkész! 🚀');
 });
 
-app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
+// ÚJ: Az '/epg.php'-t is hozzáadtam, mert sok alkalmazás ezen keresi a műsorújságot
+app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
     const { username, password } = req.query;
 
-    console.log(`Bejelentkezési kísérlet: ${username}`);
+    console.log(`Kérés érkezett: ${req.path} (${username})`);
 
     // HITELÉSÍTÉS ELLENŐRZÉSE
     if (!checkCredentials(username, password)) {
-        console.log(`Hiba: '${username}' névvel próbáltak belépni, de a Proxy-hoz '${MY_USER}' kell.`);
+        console.log(`Hiba: '${username}' névvel próbáltak belépni.`);
         return res.status(401).json({ error: "Hibás proxy hitelesítés!" });
     }
 
@@ -49,32 +51,47 @@ app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
             
             // SERVER INFO ÁTÍRÁSA
             if (data && data.server_info) {
-                const host = req.get('host');
+                // ÚJ: A port levágása a host-ról (ha benne lenne), mert azt az API külön kezeli
+                const host = req.get('host').split(':')[0];
                 data.server_info.url = host;
                 data.server_info.port = "443";
                 data.server_info.https_port = "443";
                 data.server_info.server_protocol = "https";
             }
 
-            // USER INFO ÁTÍRÁSA (Ez volt a hiba!)
-            // Kicseréljük az igazi adatokat a te proxy adataidra
+            // USER INFO ÁTÍRÁSA
             if (data && data.user_info) {
                 data.user_info.username = MY_USER;
                 data.user_info.password = MY_PASS;
             }
 
-            console.log(`Sikeres válasz küldése a kliensnek (${username})`);
+            console.log(`JSON válasz elküldve (${username})`);
             res.setHeader('Content-Type', 'application/json; charset=utf-8');
             return res.send(JSON.stringify(data));
+            
         } else {
-            const textData = await response.text();
+            // ÚJ: Nagy fájlok (XMLTV) streamelése a memóriába töltés helyett!
+            console.log(`EPG fájl streamelése...`);
             res.setHeader('Content-Type', contentType || 'text/plain');
-            return res.send(textData);
+            
+            if (response.body) {
+                try {
+                    // Node.js 18+ (beépített fetch / Web Streams API)
+                    Readable.fromWeb(response.body).pipe(res);
+                } catch (err) {
+                    // Régebbi Node.js verzió vagy külső node-fetch csomag esetén
+                    response.body.pipe(res);
+                }
+            } else {
+                res.send('');
+            }
         }
 
     } catch (error) {
         console.error('Szerver hiba:', error.message);
-        res.status(500).send('Belső hiba.');
+        if (!res.headersSent) {
+            res.status(500).send('Belső hiba.');
+        }
     }
 });
 
