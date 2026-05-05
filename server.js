@@ -1,5 +1,5 @@
 const express = require('express');
-const { Readable } = require('stream'); // ÚJ: Stream modul importálása a nagy fájlokhoz
+const { Readable } = require('stream');
 const app = express();
 
 const port = process.env.PORT || 3000;
@@ -21,7 +21,6 @@ app.get('/', (req, res) => {
     res.status(200).send('Proxy üzemkész! 🚀');
 });
 
-// ÚJ: Az '/epg.php'-t is hozzáadtam, mert sok alkalmazás ezen keresi a műsorújságot
 app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
     const { username, password } = req.query;
 
@@ -40,10 +39,13 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
         
         const targetUrl = `${IPTV_URL}${req.path}?${urlParams.toString()}`;
         
-        const response = await fetch(targetUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
-
+        // JAVÍTÁS: A lejátszó EREDETI User-Agent-jét küldjük tovább, 
+        // nehogy a szolgáltató blokkolja a nagy EPG letöltést!
+        const fetchHeaders = { 
+            'User-Agent': req.headers['user-agent'] || 'VLC/3.0.0' 
+        };
+        
+        const response = await fetch(targetUrl, { headers: fetchHeaders });
         const contentType = response.headers.get('content-type');
         
         if (contentType && contentType.includes('application/json')) {
@@ -51,7 +53,6 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
             
             // SERVER INFO ÁTÍRÁSA
             if (data && data.server_info) {
-                // ÚJ: A port levágása a host-ról (ha benne lenne), mert azt az API külön kezeli
                 const host = req.get('host').split(':')[0];
                 data.server_info.url = host;
                 data.server_info.port = "443";
@@ -65,30 +66,46 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
                 data.user_info.password = MY_PASS;
             }
 
-            console.log(`JSON válasz elküldve (${username})`);
             res.setHeader('Content-Type', 'application/json; charset=utf-8');
             return res.send(JSON.stringify(data));
             
         } else {
-            // ÚJ: Nagy fájlok (XMLTV) streamelése a memóriába töltés helyett!
-            console.log(`EPG fájl streamelése...`);
-            res.setHeader('Content-Type', contentType || 'text/plain');
+            // JAVÍTÁS: EPG (XMLTV) STREAMELÉS EXTRÁKKAL
+            console.log(`EPG fájl letöltése megkezdődött...`);
             
+            res.setHeader('Content-Type', contentType || 'application/xml');
+            
+            // Ha a szolgáltató küld fájlnevet, továbbítjuk
+            const disposition = response.headers.get('content-disposition');
+            if (disposition) res.setHeader('Content-Disposition', disposition);
+
+            // JAVÍTÁS: A pontos fájlméret átadása, hogy a lejátszó ne fagyjon le a letöltésnél
+            const contentLength = response.headers.get('content-length');
+            if (contentLength) res.setHeader('Content-Length', contentLength);
+
             if (response.body) {
+                // Biztonságos streamelés eseménykezelőkkel (ha megszakad, ne fagyjon ki az app)
+                const handleStreamEvents = (stream) => {
+                    stream.pipe(res);
+                    stream.on('end', () => console.log(`EPG letöltés SIKERESEN befejeződött.`));
+                    stream.on('error', (err) => {
+                        console.error('Hiba a streamelés alatt:', err.message);
+                        res.end(); // Ezzel kötelezzük az appot, hogy fejezze be a végtelen töltést
+                    });
+                };
+
                 try {
-                    // Node.js 18+ (beépített fetch / Web Streams API)
-                    Readable.fromWeb(response.body).pipe(res);
+                    handleStreamEvents(Readable.fromWeb(response.body));
                 } catch (err) {
-                    // Régebbi Node.js verzió vagy külső node-fetch csomag esetén
-                    response.body.pipe(res);
+                    handleStreamEvents(response.body);
                 }
             } else {
-                res.send('');
+                res.status(204).send(); // Üres adat esetén azonnal lezárjuk
             }
         }
 
     } catch (error) {
-        console.error('Szerver hiba:', error.message);
+        console.error('Szerver hiba kéréskor:', error.message);
         if (!res.headersSent) {
             res.status(500).send('Belső hiba.');
         }
