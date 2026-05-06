@@ -22,11 +22,13 @@ app.get('/', (req, res) => {
 });
 
 app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
-    const { username, password, action } = req.query;
+    const { username, password } = req.query;
 
-    console.log(`Kérés érkezett: ${req.path} | Akció: ${action || 'Fő bejelentkezés'}`);
+    console.log(`Kérés érkezett: ${req.path} (${username})`);
 
+    // HITELÉSÍTÉS ELLENŐRZÉSE
     if (!checkCredentials(username, password)) {
+        console.log(`Hiba: '${username}' névvel próbáltak belépni.`);
         return res.status(401).json({ error: "Hibás proxy hitelesítés!" });
     }
 
@@ -37,70 +39,76 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
         
         const targetUrl = `${IPTV_URL}${req.path}?${urlParams.toString()}`;
         
+        // JAVÍTÁS: A lejátszó EREDETI User-Agent-jét küldjük tovább, 
+        // nehogy a szolgáltató blokkolja a nagy EPG letöltést!
         const fetchHeaders = { 
             'User-Agent': req.headers['user-agent'] || 'VLC/3.0.0' 
         };
         
         const response = await fetch(targetUrl, { headers: fetchHeaders });
-        const contentType = response.headers.get('content-type') || '';
+        const contentType = response.headers.get('content-type');
         
-        // JAVÍTÁS: CSAK a legelső bejelentkezéskor (amikor NINCS 'action' paraméter) írjuk át a JSON-t.
-        // Ez adja át a szerver URL-t a lejátszónak.
-        if (req.path.includes('player_api.php') && !action) {
-            try {
-                let data = await response.json();
-                
-                if (data && data.server_info) {
-                    const host = req.get('host').split(':')[0];
-                    data.server_info.url = host;
-                    data.server_info.port = "443";
-                    data.server_info.https_port = "443";
-                    data.server_info.server_protocol = "https";
-                }
-
-                if (data && data.user_info) {
-                    data.user_info.username = MY_USER;
-                    data.user_info.password = MY_PASS;
-                }
-
-                res.setHeader('Content-Type', 'application/json; charset=utf-8');
-                return res.send(JSON.stringify(data));
-            } catch (err) {
-                console.error('Hiba a belépési adatok módosításánál:', err.message);
+        if (contentType && contentType.includes('application/json')) {
+            let data = await response.json();
+            
+            // SERVER INFO ÁTÍRÁSA
+            if (data && data.server_info) {
+                const host = req.get('host').split(':')[0];
+                data.server_info.url = host;
+                data.server_info.port = "443";
+                data.server_info.https_port = "443";
+                data.server_info.server_protocol = "https";
             }
-        }
 
-        // JAVÍTÁS: Minden más esetben (csatornalista, Now/Next infó, teljes EPG) 
-        // érintetlenül átstreameljük az adatot, hogy a lejátszó hibátlanul be tudja olvasni!
-        res.setHeader('Content-Type', contentType);
-        
-        const disposition = response.headers.get('content-disposition');
-        if (disposition) res.setHeader('Content-Disposition', disposition);
-
-        const contentLength = response.headers.get('content-length');
-        if (contentLength) res.setHeader('Content-Length', contentLength);
-
-        if (response.body) {
-            const handleStreamEvents = (stream) => {
-                stream.pipe(res);
-                stream.on('error', (err) => {
-                    console.error('Hiba a streamelés alatt:', err.message);
-                    res.end();
-                });
-            };
-
-            try {
-                handleStreamEvents(Readable.fromWeb(response.body));
-            } catch (err) {
-                handleStreamEvents(response.body);
+            // USER INFO ÁTÍRÁSA
+            if (data && data.user_info) {
+                data.user_info.username = MY_USER;
+                data.user_info.password = MY_PASS;
             }
+
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            return res.send(JSON.stringify(data));
+            
         } else {
-            res.status(204).send();
+            // JAVÍTÁS: EPG (XMLTV) STREAMELÉS EXTRÁKKAL
+            console.log(`EPG fájl letöltése megkezdődött...`);
+            
+            res.setHeader('Content-Type', contentType || 'application/xml');
+            
+            // Ha a szolgáltató küld fájlnevet, továbbítjuk
+            const disposition = response.headers.get('content-disposition');
+            if (disposition) res.setHeader('Content-Disposition', disposition);
+
+            // JAVÍTÁS: A pontos fájlméret átadása, hogy a lejátszó ne fagyjon le a letöltésnél
+            const contentLength = response.headers.get('content-length');
+            if (contentLength) res.setHeader('Content-Length', contentLength);
+
+            if (response.body) {
+                // Biztonságos streamelés eseménykezelőkkel (ha megszakad, ne fagyjon ki az app)
+                const handleStreamEvents = (stream) => {
+                    stream.pipe(res);
+                    stream.on('end', () => console.log(`EPG letöltés SIKERESEN befejeződött.`));
+                    stream.on('error', (err) => {
+                        console.error('Hiba a streamelés alatt:', err.message);
+                        res.end(); // Ezzel kötelezzük az appot, hogy fejezze be a végtelen töltést
+                    });
+                };
+
+                try {
+                    handleStreamEvents(Readable.fromWeb(response.body));
+                } catch (err) {
+                    handleStreamEvents(response.body);
+                }
+            } else {
+                res.status(204).send(); // Üres adat esetén azonnal lezárjuk
+            }
         }
 
     } catch (error) {
         console.error('Szerver hiba kéréskor:', error.message);
-        if (!res.headersSent) res.status(500).send('Belső hiba.');
+        if (!res.headersSent) {
+            res.status(500).send('Belső hiba.');
+        }
     }
 });
 
