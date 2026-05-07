@@ -22,10 +22,11 @@ app.get('/', (req, res) => {
 });
 
 app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
-    const { username, password, action } = req.query;
+    const { username, password, action } = req.query; // + 'action' beolvasása a Now/Next javításhoz
 
-    console.log(`Kérés érkezett: ${req.path} (${username}) | Akció: ${action || 'Fő bejelentkezés'}`);
+    console.log(`Kérés érkezett: ${req.path} (${username})`);
 
+    // HITELÉSÍTÉS ELLENŐRZÉSE
     if (!checkCredentials(username, password)) {
         console.log(`Hiba: '${username}' névvel próbáltak belépni.`);
         return res.status(401).json({ error: "Hibás proxy hitelesítés!" });
@@ -38,41 +39,52 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
         
         const targetUrl = `${IPTV_URL}${req.path}?${urlParams.toString()}`;
         
+        // A lejátszó EREDETI User-Agent-jét küldjük tovább
         const fetchHeaders = { 
             'User-Agent': req.headers['user-agent'] || 'VLC/3.0.0' 
         };
         
         const response = await fetch(targetUrl, { headers: fetchHeaders });
-        const contentType = response.headers.get('content-type') || '';
+        const contentType = response.headers.get('content-type');
         
-        // HIBADERÍTÉS: Kicserélve a sima json() olvasást szövegesre
-        if (req.path.includes('player_api.php') && !action && contentType.includes('application/json')) {
-            let rawText = await response.text(); 
+        if (contentType && contentType.includes('application/json')) {
+            // Szövegként olvassuk be, hogy elkerüljük az összeomlást, ha hiba van
+            let rawText = await response.text();
+            
             try {
                 let data = JSON.parse(rawText);
                 
-                if (data && data.server_info) {
-                    const host = req.get('host').split(':')[0];
-                    data.server_info.url = host;
-                    data.server_info.port = "443";
-                    data.server_info.https_port = "443";
-                    data.server_info.server_protocol = "https";
-                }
+                // JAVÍTÁS: Csak akkor írjuk át az adatokat, ha nincs 'action' paraméter.
+                // Ez oldja meg, hogy a csatornáknál rendesen kiírja, mi megy éppen!
+                if (!action) {
+                    // SERVER INFO ÁTÍRÁSA
+                    if (data && data.server_info) {
+                        const host = req.get('host').split(':')[0];
+                        data.server_info.url = host;
+                        data.server_info.port = "443";
+                        data.server_info.https_port = "443";
+                        data.server_info.server_protocol = "https";
+                    }
 
-                if (data && data.user_info) {
-                    data.user_info.username = MY_USER;
-                    data.user_info.password = MY_PASS;
+                    // USER INFO ÁTÍRÁSA
+                    if (data && data.user_info) {
+                        data.user_info.username = MY_USER;
+                        data.user_info.password = MY_PASS;
+                    }
                 }
 
                 res.setHeader('Content-Type', 'application/json; charset=utf-8');
                 return res.send(JSON.stringify(data));
             } catch (err) {
-                // ITT FOGJUK ELKAPNI A VALÓDI HIBÁT, AMIT A SZOLGÁLTATÓ KÜLD!
-                console.error('NEM JSON ÉRKEZETT A SZOLGÁLTATÓTÓL! Ezt küldte:', rawText);
-                return res.status(502).json({ error: "A szolgáltató hibás vagy üres adatot küldött.", raw: rawText });
+                // Ha nem JSON jött (pl. Cloudflare védelem), egyenesen továbbítjuk
+                res.setHeader('Content-Type', 'text/html; charset=utf-8');
+                return res.send(rawText);
             }
+            
         } else {
-            // Minden más (EPG, Now/Next info, Csatornalista) streamelése
+            // EPG (XMLTV) STREAMELÉS EXTRÁKKAL
+            console.log(`EPG fájl letöltése megkezdődött...`);
+            
             res.setHeader('Content-Type', contentType || 'application/xml');
             
             const disposition = response.headers.get('content-disposition');
@@ -84,14 +96,10 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
             if (response.body) {
                 const handleStreamEvents = (stream) => {
                     stream.pipe(res);
-                    stream.on('end', () => {
-                        if (req.path.includes('xmltv') || req.path.includes('epg')) {
-                            console.log(`EPG letöltés SIKERESEN befejeződött.`);
-                        }
-                    });
+                    stream.on('end', () => console.log(`EPG letöltés SIKERESEN befejeződött.`));
                     stream.on('error', (err) => {
                         console.error('Hiba a streamelés alatt:', err.message);
-                        res.end();
+                        res.end(); 
                     });
                 };
 
