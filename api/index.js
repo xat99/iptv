@@ -1,7 +1,6 @@
 const express = require('express');
 const app = express();
 
-// Beállítások (Ezeket a Vercel Dashboard-on kell majd beállítani!)
 const IPTV_URL = process.env.IPTV_URL ? process.env.IPTV_URL.replace(/\/+$/, "") : ""; 
 const IPTV_USER = process.env.IPTV_USER;
 const IPTV_PASS = process.env.IPTV_PASS;
@@ -14,14 +13,15 @@ function checkCredentials(user, pass) {
 }
 
 app.get('/', (req, res) => {
-    res.status(200).send('IPTV Proxy: Vercel-en is aktív! 🚀');
+    res.status(200).send('IPTV Proxy: Vercel aktív! 🚀');
 });
 
-app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
+// ÚJ: Hozzáadtuk a /get.php-t a listához!
+app.get(['/player_api.php', '/xmltv.php', '/get.php'], async (req, res) => {
     const { username, password } = req.query;
 
     if (!checkCredentials(username, password)) {
-        return res.status(401).json({ error: "Hibás adatok!" });
+        return res.status(401).json({ error: "Hibás hitelesítés! Ellenőrizd a TV-n a nevet/jelszót!" });
     }
 
     try {
@@ -35,13 +35,18 @@ app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
             headers: { 'User-Agent': 'Mozilla/5.0' }
         });
 
+        // Ha a szolgáltató átirányít (pl stream letöltésnél a get.php-n)
+        if (response.redirected) {
+             return res.redirect(302, response.url);
+        }
+
         const contentType = response.headers.get('content-type');
 
         if (contentType && contentType.includes('application/json')) {
             let data = await response.json();
             
             const host = req.headers.host;
-            const protocol = 'https'; // Vercel mindig https-t használ
+            const protocol = 'https';
 
             if (data && data.server_info) {
                 data.server_info.url = host;
@@ -60,7 +65,7 @@ app.get(['/player_api.php', '/xmltv.php'], async (req, res) => {
             return res.send(JSON.stringify(data));
         } else {
             const textData = await response.text();
-            res.setHeader('Content-Type', contentType || 'text/xml');
+            res.setHeader('Content-Type', contentType || 'text/plain');
             return res.send(textData);
         }
     } catch (error) {
@@ -75,5 +80,4 @@ app.get('/:type/:user/:pass/:filename', (req, res) => {
     res.redirect(302, `${IPTV_URL}/${type}/${IPTV_USER}/${IPTV_PASS}/${filename}`);
 });
 
-// Ez a lényeg a Vercel-nek!
 module.exports = app;
