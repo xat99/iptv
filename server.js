@@ -22,12 +22,10 @@ app.get('/', (req, res) => {
 });
 
 app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
-    // JAVÍTÁS: Beolvassuk az 'action' paramétert is, ez mutatja, ha csak műsorinfót kér az app
     const { username, password, action } = req.query;
 
     console.log(`Kérés érkezett: ${req.path} (${username}) | Akció: ${action || 'Fő bejelentkezés'}`);
 
-    // HITELÉSÍTÉS ELLENŐRZÉSE
     if (!checkCredentials(username, password)) {
         console.log(`Hiba: '${username}' névvel próbáltak belépni.`);
         return res.status(401).json({ error: "Hibás proxy hitelesítés!" });
@@ -40,7 +38,6 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
         
         const targetUrl = `${IPTV_URL}${req.path}?${urlParams.toString()}`;
         
-        // A lejátszó EREDETI User-Agent-jét küldjük tovább
         const fetchHeaders = { 
             'User-Agent': req.headers['user-agent'] || 'VLC/3.0.0' 
         };
@@ -48,44 +45,43 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
         const response = await fetch(targetUrl, { headers: fetchHeaders });
         const contentType = response.headers.get('content-type') || '';
         
-        // JAVÍTÁS LÉNYEGE: Itt a varázslat. CSAK akkor írjuk át a szerver adatokat, 
-        // ha NINCS 'action' paraméter (vagyis ez a legelső belépés).
-        // Ha van action (pl. 'get_short_epg', amit a csatornaváltásnál kér a tv), azt érintetlenül hagyjuk!
+        // HIBADERÍTÉS: Kicserélve a sima json() olvasást szövegesre
         if (req.path.includes('player_api.php') && !action && contentType.includes('application/json')) {
-            let data = await response.json();
-            
-            // SERVER INFO ÁTÍRÁSA
-            if (data && data.server_info) {
-                const host = req.get('host').split(':')[0];
-                data.server_info.url = host;
-                data.server_info.port = "443";
-                data.server_info.https_port = "443";
-                data.server_info.server_protocol = "https";
-            }
+            let rawText = await response.text(); 
+            try {
+                let data = JSON.parse(rawText);
+                
+                if (data && data.server_info) {
+                    const host = req.get('host').split(':')[0];
+                    data.server_info.url = host;
+                    data.server_info.port = "443";
+                    data.server_info.https_port = "443";
+                    data.server_info.server_protocol = "https";
+                }
 
-            // USER INFO ÁTÍRÁSA
-            if (data && data.user_info) {
-                data.user_info.username = MY_USER;
-                data.user_info.password = MY_PASS;
-            }
+                if (data && data.user_info) {
+                    data.user_info.username = MY_USER;
+                    data.user_info.password = MY_PASS;
+                }
 
-            res.setHeader('Content-Type', 'application/json; charset=utf-8');
-            return res.send(JSON.stringify(data));
-            
+                res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                return res.send(JSON.stringify(data));
+            } catch (err) {
+                // ITT FOGJUK ELKAPNI A VALÓDI HIBÁT, AMIT A SZOLGÁLTATÓ KÜLD!
+                console.error('NEM JSON ÉRKEZETT A SZOLGÁLTATÓTÓL! Ezt küldte:', rawText);
+                return res.status(502).json({ error: "A szolgáltató hibás vagy üres adatot küldött.", raw: rawText });
+            }
         } else {
-            // MINDEN MÁS ADAT STREAMELÉSE (teljes EPG, Now/Next info, Csatornalista)
+            // Minden más (EPG, Now/Next info, Csatornalista) streamelése
             res.setHeader('Content-Type', contentType || 'application/xml');
             
-            // Ha a szolgáltató küld fájlnevet, továbbítjuk
             const disposition = response.headers.get('content-disposition');
             if (disposition) res.setHeader('Content-Disposition', disposition);
 
-            // A pontos fájlméret átadása
             const contentLength = response.headers.get('content-length');
             if (contentLength) res.setHeader('Content-Length', contentLength);
 
             if (response.body) {
-                // Biztonságos streamelés eseménykezelőkkel
                 const handleStreamEvents = (stream) => {
                     stream.pipe(res);
                     stream.on('end', () => {
@@ -105,7 +101,7 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
                     handleStreamEvents(response.body);
                 }
             } else {
-                res.status(204).send(); // Üres adat esetén azonnal lezárjuk
+                res.status(204).send();
             }
         }
 
