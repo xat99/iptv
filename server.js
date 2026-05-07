@@ -22,9 +22,10 @@ app.get('/', (req, res) => {
 });
 
 app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
-    const { username, password } = req.query;
+    // JAVÍTÁS: Beolvassuk az 'action' paramétert is, ez mutatja, ha csak műsorinfót kér az app
+    const { username, password, action } = req.query;
 
-    console.log(`Kérés érkezett: ${req.path} (${username})`);
+    console.log(`Kérés érkezett: ${req.path} (${username}) | Akció: ${action || 'Fő bejelentkezés'}`);
 
     // HITELÉSÍTÉS ELLENŐRZÉSE
     if (!checkCredentials(username, password)) {
@@ -39,16 +40,18 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
         
         const targetUrl = `${IPTV_URL}${req.path}?${urlParams.toString()}`;
         
-        // JAVÍTÁS: A lejátszó EREDETI User-Agent-jét küldjük tovább, 
-        // nehogy a szolgáltató blokkolja a nagy EPG letöltést!
+        // A lejátszó EREDETI User-Agent-jét küldjük tovább
         const fetchHeaders = { 
             'User-Agent': req.headers['user-agent'] || 'VLC/3.0.0' 
         };
         
         const response = await fetch(targetUrl, { headers: fetchHeaders });
-        const contentType = response.headers.get('content-type');
+        const contentType = response.headers.get('content-type') || '';
         
-        if (contentType && contentType.includes('application/json')) {
+        // JAVÍTÁS LÉNYEGE: Itt a varázslat. CSAK akkor írjuk át a szerver adatokat, 
+        // ha NINCS 'action' paraméter (vagyis ez a legelső belépés).
+        // Ha van action (pl. 'get_short_epg', amit a csatornaváltásnál kér a tv), azt érintetlenül hagyjuk!
+        if (req.path.includes('player_api.php') && !action && contentType.includes('application/json')) {
             let data = await response.json();
             
             // SERVER INFO ÁTÍRÁSA
@@ -70,27 +73,29 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php'], async (req, res) => {
             return res.send(JSON.stringify(data));
             
         } else {
-            // JAVÍTÁS: EPG (XMLTV) STREAMELÉS EXTRÁKKAL
-            console.log(`EPG fájl letöltése megkezdődött...`);
-            
+            // MINDEN MÁS ADAT STREAMELÉSE (teljes EPG, Now/Next info, Csatornalista)
             res.setHeader('Content-Type', contentType || 'application/xml');
             
             // Ha a szolgáltató küld fájlnevet, továbbítjuk
             const disposition = response.headers.get('content-disposition');
             if (disposition) res.setHeader('Content-Disposition', disposition);
 
-            // JAVÍTÁS: A pontos fájlméret átadása, hogy a lejátszó ne fagyjon le a letöltésnél
+            // A pontos fájlméret átadása
             const contentLength = response.headers.get('content-length');
             if (contentLength) res.setHeader('Content-Length', contentLength);
 
             if (response.body) {
-                // Biztonságos streamelés eseménykezelőkkel (ha megszakad, ne fagyjon ki az app)
+                // Biztonságos streamelés eseménykezelőkkel
                 const handleStreamEvents = (stream) => {
                     stream.pipe(res);
-                    stream.on('end', () => console.log(`EPG letöltés SIKERESEN befejeződött.`));
+                    stream.on('end', () => {
+                        if (req.path.includes('xmltv') || req.path.includes('epg')) {
+                            console.log(`EPG letöltés SIKERESEN befejeződött.`);
+                        }
+                    });
                     stream.on('error', (err) => {
                         console.error('Hiba a streamelés alatt:', err.message);
-                        res.end(); // Ezzel kötelezzük az appot, hogy fejezze be a végtelen töltést
+                        res.end();
                     });
                 };
 
