@@ -19,9 +19,10 @@ app.get('/', (req, res) => {
     res.status(200).send('Proxy üzemkész Vercel-en! 🚀');
 });
 
-// Beleraktam a /get.php-t is a biztonság kedvéért!
-app.get(['/player_api.php', '/xmltv.php', '/epg.php', '/get.php'], async (req, res) => {
-    const { username, password } = req.query;
+// JAVÍTÁS 1: Bekerült a /get.php mellé az /m3u.php is!
+app.get(['/player_api.php', '/xmltv.php', '/epg.php', '/get.php', '/m3u.php'], async (req, res) => {
+    // JAVÍTÁS 2: Az 'action' beolvasása a Now/Next (Éppen megy) hiba javításához
+    const { username, password, action } = req.query;
 
     console.log(`Kérés érkezett: ${req.path} (${username})`);
 
@@ -38,8 +39,13 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php', '/get.php'], async (req, r
         
         const targetUrl = `${IPTV_URL}${req.path}?${urlParams.toString()}`;
         
+        // Álcázás, hogy ne blokkoljon a szolgáltató
         const fetchHeaders = { 
-            'User-Agent': req.headers['user-agent'] || 'VLC/3.0.0' 
+            'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'hu-HU,hu;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Connection': 'keep-alive',
+            'Referer': IPTV_URL
         };
         
         const response = await fetch(targetUrl, { headers: fetchHeaders });
@@ -52,33 +58,45 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php', '/get.php'], async (req, r
         const contentType = response.headers.get('content-type');
         
         if (contentType && contentType.includes('application/json')) {
-            let data = await response.json();
+            // Szövegként olvassuk be, hogy a Cloudflare hiba ne olvassza le a szervert
+            let rawText = await response.text();
             
-            // SERVER INFO ÁTÍRÁSA
-            if (data && data.server_info) {
-                const host = req.headers.host.split(':')[0]; // Vercel kompatibilis Host lekérés
-                const protocol = 'https'; // Vercel mindig https
-
-                data.server_info.url = host;
-                data.server_info.port = "443";
-                data.server_info.https_port = "443";
-                data.server_info.server_protocol = protocol;
+            try {
+                let data = JSON.parse(rawText);
                 
-                // Műsorújság visszairányítása hozzánk
-                data.server_info.xmltv_api = `${protocol}://${host}/xmltv.php`;
-            }
+                // CSAK akkor írjuk át az adatokat, ha nincs 'action' (Now/Next javítás)
+                if (!action && req.path.includes('player_api.php')) {
+                    // SERVER INFO ÁTÍRÁSA
+                    if (data && data.server_info) {
+                        const host = req.headers.host.split(':')[0]; // Vercel kompatibilis Host lekérés
+                        const protocol = 'https'; // Vercel mindig https
 
-            // USER INFO ÁTÍRÁSA
-            if (data && data.user_info) {
-                data.user_info.username = MY_USER;
-                data.user_info.password = MY_PASS;
-            }
+                        data.server_info.url = host;
+                        data.server_info.port = "443";
+                        data.server_info.https_port = "443";
+                        data.server_info.server_protocol = protocol;
+                        
+                        // Műsorújság visszairányítása hozzánk
+                        data.server_info.xmltv_api = `${protocol}://${host}/xmltv.php`;
+                    }
 
-            res.setHeader('Content-Type', 'application/json; charset=utf-8');
-            return res.send(JSON.stringify(data));
+                    // USER INFO ÁTÍRÁSA
+                    if (data && data.user_info) {
+                        data.user_info.username = MY_USER;
+                        data.user_info.password = MY_PASS;
+                    }
+                }
+
+                res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                return res.send(JSON.stringify(data));
+                
+            } catch (err) {
+                res.setHeader('Content-Type', 'text/html; charset=utf-8');
+                return res.send(rawText);
+            }
             
         } else {
-            // EPG (XMLTV) STREAMELÉS EXTRÁKKAL
+            // EPG és M3U STREAMELÉS
             console.log(`Fájl/EPG letöltése megkezdődött...`);
             
             res.setHeader('Content-Type', contentType || 'application/xml');
