@@ -19,9 +19,9 @@ app.get('/', (req, res) => {
     res.status(200).send('Proxy üzemkész Vercel-en! 🚀');
 });
 
-// JAVÍTÁS 1: Bekerült a /get.php mellé az /m3u.php is!
+// Bekerült a /get.php mellé az /m3u.php is
 app.get(['/player_api.php', '/xmltv.php', '/epg.php', '/get.php', '/m3u.php'], async (req, res) => {
-    // JAVÍTÁS 2: Az 'action' beolvasása a Now/Next (Éppen megy) hiba javításához
+    // Az 'action' beolvasása a Now/Next (Éppen megy) hiba javításához
     const { username, password, action } = req.query;
 
     console.log(`Kérés érkezett: ${req.path} (${username})`);
@@ -56,6 +56,14 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php', '/get.php', '/m3u.php'], a
         }
 
         const contentType = response.headers.get('content-type');
+
+        // =========================================================
+        // JAVÍTÁS: VERCEL CACHE TILTÁSA (Előfizetés csere miatt)
+        // =========================================================
+        res.setHeader('Cache-Control', 's-maxage=0, no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.setHeader('Surrogate-Control', 'no-store');
         
         if (contentType && contentType.includes('application/json')) {
             // Szövegként olvassuk be, hogy a Cloudflare hiba ne olvassza le a szervert
@@ -78,6 +86,9 @@ app.get(['/player_api.php', '/xmltv.php', '/epg.php', '/get.php', '/m3u.php'], a
                         
                         // Műsorújság visszairányítása hozzánk
                         data.server_info.xmltv_api = `${protocol}://${host}/xmltv.php`;
+                        
+                        // Időbélyeg frissítése, hogy a TV biztosan lássa a változást
+                        data.server_info.timestamp = Math.floor(Date.now() / 1000);
                     }
 
                     // USER INFO ÁTÍRÁSA
@@ -145,6 +156,9 @@ app.get('/:type/:user/:pass/:filename', (req, res) => {
     if (!checkCredentials(user, pass)) {
         return res.status(403).send('Tiltott stream elérés!');
     }
+
+    // Itt is letiltjuk a cache-t, hogy a stream biztosan mindig újrainduljon!
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
     const finalStreamUrl = `${IPTV_URL}/${type}/${IPTV_USER}/${IPTV_PASS}/${filename}`;
     res.redirect(302, finalStreamUrl);
